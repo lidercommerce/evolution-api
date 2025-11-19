@@ -950,6 +950,8 @@ export class BaileysStartupService extends ChannelStartupService {
           }
         }
 
+        const chatsMessages = new Map<string, any[]>();
+
         const chatsRaw: { remoteJid: string; instanceId: string; name?: string }[] = [];
         const chatsRepository = new Set(
           (await this.prismaRepository.chat.findMany({ where: { instanceId: this.instanceId } })).map(
@@ -962,6 +964,7 @@ export class BaileysStartupService extends ChannelStartupService {
             continue;
           }
 
+          chatsMessages.set(chat.id, []);
           chatsRaw.push({ remoteJid: chat.id, instanceId: this.instanceId, name: chat.name });
         }
 
@@ -1019,8 +1022,19 @@ export class BaileysStartupService extends ChannelStartupService {
             }
           }
 
-          messagesRaw.push(this.prepareMessage(m));
+          const preparedMessage = this.prepareMessage(m);
+
+          const chatWithRemoteJid = chatsMessages.get(m.key.remoteJid);
+          const chatWithRemoteJidAlt = chatsMessages.get(m.key.remoteJidAlt);
+
+          if (chatWithRemoteJid && chatWithRemoteJid.length < 100) {
+            chatsMessages.set(m.key.remoteJid, [...chatWithRemoteJid, preparedMessage]);
+          } else if (chatWithRemoteJidAlt && chatWithRemoteJidAlt.length < 100) {
+            chatsMessages.set(m.key.remoteJidAlt, [...chatWithRemoteJidAlt, preparedMessage]);
+          }
         }
+
+        messagesRaw.push(...Array.from(chatsMessages.values()).flat());
 
         this.sendDataWebhook(Events.MESSAGES_SET, [...messagesRaw]);
 
@@ -4954,3 +4968,4 @@ export class BaileysStartupService extends ChannelStartupService {
     };
   }
 }
+
