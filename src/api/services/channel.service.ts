@@ -621,9 +621,11 @@ export class ChannelStartupService {
           {
             OR: [
               keyFilters?.remoteJid ? { key: { path: ['remoteJid'], equals: keyFilters?.remoteJid } } : {},
+              keyFilters?.remoteJid ? { key: { path: ['remoteJidAlt'], equals: keyFilters?.remoteJid } } : {},
+              keyFilters?.remoteJidAlt ? { key: { path: ['remoteJid'], equals: keyFilters?.remoteJidAlt } } : {},
               keyFilters?.remoteJidAlt ? { key: { path: ['remoteJidAlt'], equals: keyFilters?.remoteJidAlt } } : {},
             ],
-          }
+          },
         ],
       },
     });
@@ -646,8 +648,15 @@ export class ChannelStartupService {
         AND: [
           keyFilters?.id ? { key: { path: ['id'], equals: keyFilters?.id } } : {},
           keyFilters?.fromMe ? { key: { path: ['fromMe'], equals: keyFilters?.fromMe } } : {},
-          keyFilters?.remoteJid ? { key: { path: ['remoteJid'], equals: keyFilters?.remoteJid } } : {},
           keyFilters?.participants ? { key: { path: ['participants'], equals: keyFilters?.participants } } : {},
+          {
+            OR: [
+              keyFilters?.remoteJid ? { key: { path: ['remoteJid'], equals: keyFilters?.remoteJid } } : {},
+              keyFilters?.remoteJid ? { key: { path: ['remoteJidAlt'], equals: keyFilters?.remoteJid } } : {},
+              keyFilters?.remoteJidAlt ? { key: { path: ['remoteJid'], equals: keyFilters?.remoteJidAlt } } : {},
+              keyFilters?.remoteJidAlt ? { key: { path: ['remoteJidAlt'], equals: keyFilters?.remoteJidAlt } } : {},
+            ],
+          },
         ],
       },
       orderBy: {
