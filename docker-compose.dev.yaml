@@ -1,35 +1,87 @@
 services:
-  api:
+  evolution_api:
     container_name: evolution_api
     image: evolution/api:local
     build: .
     restart: always
     ports:
-      - 8080:8080
+      - "8080:8080"
     volumes:
       - evolution_instances:/evolution/instances
-    # networks:
-    #   - evolution-net
     env_file:
       - .env
     expose:
       - 8080
 
-#   frontend:
-#     container_name: evolution_frontend
-#     image: evolution/manager:local
-#     build: ./evolution-manager-v2
-#     restart: always
-#     ports:
-#       - "3000:80"
-#     networks:
-#       - evolution-net
+  evolution_api_1:
+    container_name: evolution_api_1
+    image: evolution/api:local
+    build: .
+    restart: always
+    ports:
+      - "8081:8080"
+    volumes:
+      - evolution_instances_1:/evolution/instances
+    env_file:
+      - .env.instance1
+    depends_on:
+      postgres-whatsapp-api-1:
+        condition: service_healthy
+    expose:
+      - 8080
+
+  evolution_api_2:
+    container_name: evolution_api_2
+    image: evolution/api:local
+    build: .
+    restart: always
+    ports:
+      - "8082:8080"
+    volumes:
+      - evolution_instances_2:/evolution/instances
+    env_file:
+      - .env.instance2
+    depends_on:
+      postgres-whatsapp-api-2:
+        condition: service_healthy
+    expose:
+      - 8080
+
+  postgres-whatsapp-api-1:
+    image: postgres:16.8
+    container_name: postgres-whatsapp-api-1
+    env_file:
+    - .env.instance1
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U whatsapp1 -h localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "5433:5432"
+    restart: unless-stopped
+    volumes:
+      - postgres-whatsapp-api-data-1:/var/lib/postgresql/data
+
+  postgres-whatsapp-api-2:
+    image: postgres:16.8
+    container_name: postgres-whatsapp-api-2
+    env_file:
+    - .env.instance2
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U whatsapp2 -h localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "5434:5432"
+    restart: unless-stopped
+    volumes:
+      - postgres-whatsapp-api-data-2:/var/lib/postgresql/data
 
 volumes:
   evolution_instances:
-
-
-# networks:
-#   evolution-net:
-#     name: evolution-net
-#     driver: bridge
+  evolution_instances_1:
+  evolution_instances_2:
+  postgres-whatsapp-api-data-1:
+  postgres-whatsapp-api-data-2:

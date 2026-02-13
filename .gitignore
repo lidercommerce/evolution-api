@@ -38,6 +38,8 @@ lerna-debug.log*
 /src/env.yml
 /store
 *.env
+.env.instance*
+!.env.instance*.example
 
 /temp/*
 
