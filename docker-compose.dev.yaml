@@ -47,6 +47,57 @@ services:
     expose:
       - 8080
 
+  evolution_api_3:
+    container_name: evolution_api_3
+    image: evolution/api:local
+    build: .
+    restart: always
+    ports:
+      - "8083:8080"
+    volumes:
+      - evolution_instances_3:/evolution/instances
+    env_file:
+      - .env.instance3
+    depends_on:
+      postgres-whatsapp-api-3:
+        condition: service_healthy
+    expose:
+      - 8080
+
+  evolution_api_4:
+    container_name: evolution_api_4
+    image: evolution/api:local
+    build: .
+    restart: always
+    ports:
+      - "8084:8080"
+    volumes:
+      - evolution_instances_4:/evolution/instances
+    env_file:
+      - .env.instance4
+    depends_on:
+      postgres-whatsapp-api-4:
+        condition: service_healthy
+    expose:
+      - 8080
+
+  evolution_api_5:
+    container_name: evolution_api_5
+    image: evolution/api:local
+    build: .
+    restart: always
+    ports:
+      - "8085:8080"
+    volumes:
+      - evolution_instances_5:/evolution/instances
+    env_file:
+      - .env.instance5
+    depends_on:
+      postgres-whatsapp-api-5:
+        condition: service_healthy
+    expose:
+      - 8080
+
   postgres-whatsapp-api-1:
     image: postgres:16.8
     container_name: postgres-whatsapp-api-1
@@ -79,9 +130,64 @@ services:
     volumes:
       - postgres-whatsapp-api-data-2:/var/lib/postgresql/data
 
+  postgres-whatsapp-api-3:
+    image: postgres:16.8
+    container_name: postgres-whatsapp-api-3
+    env_file:
+      - .env.instance3
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U whatsapp3 -h localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "5435:5432"
+    restart: unless-stopped
+    volumes:
+      - postgres-whatsapp-api-data-3:/var/lib/postgresql/data
+
+  postgres-whatsapp-api-4:
+    image: postgres:16.8
+    container_name: postgres-whatsapp-api-4
+    env_file:
+      - .env.instance4
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U whatsapp4 -h localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "5436:5432"
+    restart: unless-stopped
+    volumes:
+      - postgres-whatsapp-api-data-4:/var/lib/postgresql/data
+
+  postgres-whatsapp-api-5:
+    image: postgres:16.8
+    container_name: postgres-whatsapp-api-5
+    env_file:
+      - .env.instance5
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U whatsapp5 -h localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "5437:5432"
+    restart: unless-stopped
+    volumes:
+      - postgres-whatsapp-api-data-5:/var/lib/postgresql/data
+
 volumes:
   evolution_instances:
   evolution_instances_1:
   evolution_instances_2:
+  evolution_instances_3:
+  evolution_instances_4:
+  evolution_instances_5:
   postgres-whatsapp-api-data-1:
   postgres-whatsapp-api-data-2:
+  postgres-whatsapp-api-data-3:
+  postgres-whatsapp-api-data-4:
+  postgres-whatsapp-api-data-5:
+
