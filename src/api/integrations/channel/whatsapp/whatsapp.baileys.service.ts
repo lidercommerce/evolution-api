@@ -923,6 +923,20 @@ export class BaileysStartupService extends ChannelStartupService {
     },
   };
 
+  private isClickToWhatsAppAdMessage(received: WAMessage): boolean {
+    // Verificar características específicas de mensagens de anúncios
+    // que chegam sem enc node
+
+    const hasAdIndicators =
+      received?.messageStubParameters?.some?.((param) => param?.includes?.('Message absent from node')) &&
+      received?.message && // Tem conteúdo de mensagem
+      received?.key?.remoteJid && // Tem remetente válido
+      !received?.key?.fromMe && // Não é mensagem enviada por nós
+      Boolean(received?.pushName); // Tem nome do contato
+
+    return hasAdIndicators;
+  }
+
   private readonly messageHandle = {
     'messaging-history.set': async ({
       messages,
@@ -1111,8 +1125,15 @@ export class BaileysStartupService extends ChannelStartupService {
               ].some((err) => param?.includes?.(err)),
             )
           ) {
-            this.logger.warn(`Message ignored with messageStubParameters: ${JSON.stringify(received, null, 2)}`);
-            continue;
+            // TEMPORÁRIO: Verificar se é mensagem de anúncio sem enc node, para não ignorar mensagens legítimas que chegam com esses erros
+            const isClickToWhatsAppAd = this.isClickToWhatsAppAdMessage(received);
+
+            if (isClickToWhatsAppAd) {
+              this.logger.info('Processing Click-to-WhatsApp ad message without enc node');
+            } else {
+              this.logger.warn(`Message ignored with messageStubParameters: ${JSON.stringify(received, null, 2)}`);
+              continue;
+            }
           }
           if (received.message?.conversation || received.message?.extendedTextMessage?.text) {
             const text = received.message?.conversation || received.message?.extendedTextMessage?.text;
