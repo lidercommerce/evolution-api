@@ -1130,6 +1130,7 @@ export class BaileysStartupService extends ChannelStartupService {
 
             if (isClickToWhatsAppAd) {
               this.logger.info('Processing Click-to-WhatsApp ad message without enc node');
+              this.logger.info(`Message details: ${JSON.stringify(received, null, 2)}`);
             } else {
               this.logger.warn(`Message ignored with messageStubParameters: ${JSON.stringify(received, null, 2)}`);
               continue;
