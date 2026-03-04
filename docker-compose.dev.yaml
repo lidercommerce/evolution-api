@@ -5,11 +5,14 @@ services:
     build: .
     restart: always
     ports:
-      - "8080:8080"
+      - '8080:8080'
     volumes:
       - evolution_instances:/evolution/instances
     env_file:
       - .env
+    depends_on:
+      redis:
+        condition: service_started
     expose:
       - 8080
 
@@ -19,7 +22,7 @@ services:
     build: .
     restart: always
     ports:
-      - "8081:8080"
+      - '8081:8080'
     volumes:
       - evolution_instances_1:/evolution/instances
     env_file:
@@ -36,7 +39,7 @@ services:
     build: .
     restart: always
     ports:
-      - "8082:8080"
+      - '8082:8080'
     volumes:
       - evolution_instances_2:/evolution/instances
     env_file:
@@ -53,7 +56,7 @@ services:
     build: .
     restart: always
     ports:
-      - "8083:8080"
+      - '8083:8080'
     volumes:
       - evolution_instances_3:/evolution/instances
     env_file:
@@ -70,7 +73,7 @@ services:
     build: .
     restart: always
     ports:
-      - "8084:8080"
+      - '8084:8080'
     volumes:
       - evolution_instances_4:/evolution/instances
     env_file:
@@ -87,7 +90,7 @@ services:
     build: .
     restart: always
     ports:
-      - "8085:8080"
+      - '8085:8080'
     volumes:
       - evolution_instances_5:/evolution/instances
     env_file:
@@ -102,14 +105,14 @@ services:
     image: postgres:16.8
     container_name: postgres-whatsapp-api-1
     env_file:
-    - .env.instance1
+      - .env.instance1
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U whatsapp1 -h localhost"]
+      test: ['CMD-SHELL', 'pg_isready -U whatsapp1 -h localhost']
       interval: 10s
       timeout: 5s
       retries: 5
     ports:
-      - "5433:5432"
+      - '5433:5432'
     restart: unless-stopped
     volumes:
       - postgres-whatsapp-api-data-1:/var/lib/postgresql/data
@@ -118,14 +121,14 @@ services:
     image: postgres:16.8
     container_name: postgres-whatsapp-api-2
     env_file:
-    - .env.instance2
+      - .env.instance2
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U whatsapp2 -h localhost"]
+      test: ['CMD-SHELL', 'pg_isready -U whatsapp2 -h localhost']
       interval: 10s
       timeout: 5s
       retries: 5
     ports:
-      - "5434:5432"
+      - '5434:5432'
     restart: unless-stopped
     volumes:
       - postgres-whatsapp-api-data-2:/var/lib/postgresql/data
@@ -136,12 +139,12 @@ services:
     env_file:
       - .env.instance3
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U whatsapp3 -h localhost"]
+      test: ['CMD-SHELL', 'pg_isready -U whatsapp3 -h localhost']
       interval: 10s
       timeout: 5s
       retries: 5
     ports:
-      - "5435:5432"
+      - '5435:5432'
     restart: unless-stopped
     volumes:
       - postgres-whatsapp-api-data-3:/var/lib/postgresql/data
@@ -152,12 +155,12 @@ services:
     env_file:
       - .env.instance4
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U whatsapp4 -h localhost"]
+      test: ['CMD-SHELL', 'pg_isready -U whatsapp4 -h localhost']
       interval: 10s
       timeout: 5s
       retries: 5
     ports:
-      - "5436:5432"
+      - '5436:5432'
     restart: unless-stopped
     volumes:
       - postgres-whatsapp-api-data-4:/var/lib/postgresql/data
@@ -168,15 +171,25 @@ services:
     env_file:
       - .env.instance5
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U whatsapp5 -h localhost"]
+      test: ['CMD-SHELL', 'pg_isready -U whatsapp5 -h localhost']
       interval: 10s
       timeout: 5s
       retries: 5
     ports:
-      - "5437:5432"
+      - '5437:5432'
     restart: unless-stopped
     volumes:
       - postgres-whatsapp-api-data-5:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis_evolution
+    restart: always
+    ports:
+      - '6380:6379'
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
 
 volumes:
   evolution_instances:
@@ -190,4 +203,4 @@ volumes:
   postgres-whatsapp-api-data-3:
   postgres-whatsapp-api-data-4:
   postgres-whatsapp-api-data-5:
-
+  redis_data:
