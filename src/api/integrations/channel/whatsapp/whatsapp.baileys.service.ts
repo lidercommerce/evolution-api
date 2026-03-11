@@ -256,6 +256,10 @@ export class BaileysStartupService extends ChannelStartupService {
   private readonly MESSAGE_CACHE_TTL_SECONDS = 5 * 60; // 5 minutes - avoid duplicate message processing
   private readonly UPDATE_CACHE_TTL_SECONDS = 30 * 60; // 30 minutes - avoid duplicate status updates
 
+  // Map para rastrear mensagens CTWA (Click-to-WhatsApp Ads) pendentes de reenvio
+  // key: requestId do requestPlaceholderResend → value: WAMessage original
+  private readonly ctwaUnavailableMessages = new Map<string, WAMessage>();
+
   public stateConnection: wa.StateConnection = { state: 'close' };
 
   public phoneNumber: string;
@@ -937,6 +941,56 @@ export class BaileysStartupService extends ChannelStartupService {
     return hasAdIndicators;
   }
 
+  /**
+   * Emite um webhook sintético para mensagens CTWA (Click-to-WhatsApp Ads)
+   * cujo conteúdo não pôde ser recuperado (error 479 no requestPlaceholderResend).
+   * O backend receptor deve tratar messageType === 'ctwaUnavailable' com uma
+   * resposta de boas-vindas padrão ou escalação para atendente humano.
+   */
+  private emitCtwaUnavailableWebhook(received: WAMessage): void {
+    try {
+      const remoteJid = (received.key as any)?.remoteJidAlt || received.key?.remoteJid;
+
+      const syntheticMessage = {
+        key: {
+          remoteJid,
+          remoteJidAlt: (received.key as any)?.remoteJidAlt,
+          fromMe: false,
+          id: received.key?.id,
+          participant: (received.key as any)?.participant,
+          participantAlt: (received.key as any)?.participantAlt,
+          addressingMode: (received.key as any)?.addressingMode,
+        },
+        pushName: received.pushName || '',
+        status: 'DELIVERY_ACK',
+        message: { conversation: 'Olá! Tenho interesse e queria mais informações, por favor.' },
+        messageType: 'ctwaUnavailable',
+        messageTimestamp: received.messageTimestamp
+          ? typeof received.messageTimestamp === 'number'
+            ? received.messageTimestamp
+            : ((received.messageTimestamp as any).toNumber?.() ?? Date.now() / 1000)
+          : Math.floor(Date.now() / 1000),
+        instanceId: this.instanceId,
+        source: (received as any).source ?? 'unknown',
+      };
+
+      this.logger.log(`CTWA: emitting synthetic ctwaUnavailable webhook for remoteJid=${remoteJid}`);
+      this.sendDataWebhook(Events.MESSAGES_UPSERT, syntheticMessage);
+
+      // Disparar também o chatbot para que o fluxo de atendimento seja iniciado
+      chatbotController
+        .emit({
+          instance: { instanceName: this.instance.name, instanceId: this.instanceId },
+          remoteJid: remoteJid,
+          msg: syntheticMessage as any,
+          pushName: syntheticMessage.pushName,
+        })
+        .catch((err) => this.logger.error(`CTWA: chatbotController.emit failed: ${err?.message}`));
+    } catch (err) {
+      this.logger.error(`CTWA: emitCtwaUnavailableWebhook failed: ${err?.message}`);
+    }
+  }
+
   private readonly messageHandle = {
     'messaging-history.set': async ({
       messages,
@@ -1131,6 +1185,32 @@ export class BaileysStartupService extends ChannelStartupService {
             if (isClickToWhatsAppAd) {
               this.logger.info('Processing Click-to-WhatsApp ad message without enc node');
               this.logger.info(`Message details: ${JSON.stringify(received, null, 2)}`);
+
+              // Solicitar reenvio e guardar a mensagem no Map indexada pelo requestId
+              try {
+                const requestId = await this.client.requestPlaceholderResend(received.key);
+                if (requestId) {
+                  this.logger.info(`CTWA: requestPlaceholderResend dispatched, requestId=${requestId}`);
+                  this.ctwaUnavailableMessages.set(requestId, received);
+                  // Limpar do Map após 60 segundos para evitar vazamento de memória
+                  setTimeout(() => {
+                    if (this.ctwaUnavailableMessages.has(requestId)) {
+                      this.logger.warn(
+                        `CTWA: requestId=${requestId} timed out without response (error 479 expected). Emitting synthetic webhook.`,
+                      );
+                      const pendingMessage = this.ctwaUnavailableMessages.get(requestId);
+                      this.ctwaUnavailableMessages.delete(requestId);
+                      if (pendingMessage) {
+                        this.emitCtwaUnavailableWebhook(pendingMessage);
+                      }
+                    }
+                  }, 60_000);
+                }
+              } catch (err) {
+                this.logger.error(`CTWA: failed to call requestPlaceholderResend: ${err?.message}`);
+              }
+
+              continue; // Não processar agora — aguardar resposta ou timeout
             } else {
               this.logger.warn(`Message ignored with messageStubParameters: ${JSON.stringify(received, null, 2)}`);
               continue;
@@ -1595,6 +1675,18 @@ export class BaileysStartupService extends ChannelStartupService {
       const readChatToUpdate: Record<string, true> = {}; // {remoteJid: true}
 
       for await (const { key, update } of args) {
+        // Interceptar erro 479: resposta ao requestPlaceholderResend de mensagem CTWA
+        if (update.status === 0 && update.messageStubParameters?.includes('479') && key.fromMe === true) {
+          const requestId = key.id;
+          const pendingMessage = this.ctwaUnavailableMessages.get(requestId);
+          if (pendingMessage) {
+            this.logger.warn(`CTWA: error 479 received for requestId=${requestId}. Emitting synthetic webhook.`);
+            this.ctwaUnavailableMessages.delete(requestId);
+            this.emitCtwaUnavailableWebhook(pendingMessage);
+          }
+          continue;
+        }
+
         if (settings?.groupsIgnore && key.remoteJid?.includes('@g.us')) {
           continue;
         }
