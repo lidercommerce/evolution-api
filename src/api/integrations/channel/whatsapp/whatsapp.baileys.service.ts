@@ -949,6 +949,10 @@ export class BaileysStartupService extends ChannelStartupService {
    */
   private emitCtwaUnavailableWebhook(received: WAMessage): void {
     try {
+      // LOG DE DIAGNÓSTICO CTWA — remover após validação
+      this.logger.warn(
+        `[CTWA-DBG] emitCtwaUnavailableWebhook called: keyId=${received?.key?.id} remoteJid=${received?.key?.remoteJid} pushName=${received?.pushName}`,
+      );
       const remoteJid = (received.key as any)?.remoteJidAlt || received.key?.remoteJid;
 
       const syntheticMessage = {
@@ -1192,6 +1196,9 @@ export class BaileysStartupService extends ChannelStartupService {
                 if (requestId) {
                   this.logger.info(`CTWA: requestPlaceholderResend dispatched, requestId=${requestId}`);
                   this.ctwaUnavailableMessages.set(requestId, received);
+                  this.logger.warn(
+                    `[CTWA-DBG] stored in map: requestId=${requestId} mapSize=${this.ctwaUnavailableMessages.size}`,
+                  );
                   // Limpar do Map após 60 segundos para evitar vazamento de memória
                   setTimeout(() => {
                     if (this.ctwaUnavailableMessages.has(requestId)) {
@@ -1675,8 +1682,16 @@ export class BaileysStartupService extends ChannelStartupService {
       const readChatToUpdate: Record<string, true> = {}; // {remoteJid: true}
 
       for await (const { key, update } of args) {
+        // LOG DE DIAGNÓSTICO CTWA — remover após validação
+        this.logger.verbose(
+          `[CTWA-DBG] messages.update entry: keyId=${key.id} fromMe=${key.fromMe} status=${update.status} stubParams=${JSON.stringify(update.messageStubParameters)}`,
+        );
+
         // Interceptar erro 479: resposta ao requestPlaceholderResend de mensagem CTWA
         if (update.status === 0 && update.messageStubParameters?.includes('479') && key.fromMe === true) {
+          this.logger.warn(
+            `[CTWA-DBG] 479 condition matched: keyId=${key.id} mapSize=${this.ctwaUnavailableMessages.size} mapKeys=${JSON.stringify([...this.ctwaUnavailableMessages.keys()])}`,
+          );
           const requestId = key.id;
           const pendingMessage = this.ctwaUnavailableMessages.get(requestId);
           if (pendingMessage) {
