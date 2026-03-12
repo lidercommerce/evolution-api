@@ -1186,6 +1186,11 @@ export class BaileysStartupService extends ChannelStartupService {
             // TEMPORÁRIO: Verificar se é mensagem de anúncio sem enc node, para não ignorar mensagens legítimas que chegam com esses erros
             const isClickToWhatsAppAd = this.isClickToWhatsAppAdMessage(received);
 
+            // LOG DE DIAGNÓSTICO CTWA
+            this.logger.warn(
+              `[CTWA-DBG] upsert stub detected: isAd=${isClickToWhatsAppAd} stubParams=${JSON.stringify(received.messageStubParameters)} hasMessage=${!!received.message} hasRemoteJid=${!!received.key?.remoteJid} fromMe=${received.key?.fromMe} hasPushName=${!!received.pushName}`,
+            );
+
             if (isClickToWhatsAppAd) {
               this.logger.info('Processing Click-to-WhatsApp ad message without enc node');
               this.logger.info(`Message details: ${JSON.stringify(received, null, 2)}`);
@@ -1683,9 +1688,10 @@ export class BaileysStartupService extends ChannelStartupService {
 
       for await (const { key, update } of args) {
         // LOG DE DIAGNÓSTICO CTWA — remover após validação
-        this.logger.warn(
-          `[CTWA-DBG] messages.update entry: keyId=${key.id} fromMe=${key.fromMe} status=${update.status} stubParams=${JSON.stringify(update.messageStubParameters)} mapSize=${this.ctwaUnavailableMessages.size} fullUpdate=${JSON.stringify(update)}`,
+        this.logger.verbose(
+          `[CTWA-DBG] messages.update entry: keyId=${key.id} fromMe=${key.fromMe} status=${update.status} stubType=${update.messageStubType} stubParams=${JSON.stringify(update.messageStubParameters)} msgKeys=${JSON.stringify(Object.keys(update.message || {}))} mapSize=${this.ctwaUnavailableMessages.size}`,
         );
+
         // Interceptar erro 479: resposta ao requestPlaceholderResend de mensagem CTWA
         if (update.status === 0 && update.messageStubParameters?.includes('479') && key.fromMe === true) {
           this.logger.warn(
