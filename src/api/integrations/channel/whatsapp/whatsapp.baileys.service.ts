@@ -1169,6 +1169,13 @@ export class BaileysStartupService extends ChannelStartupService {
     ) => {
       try {
         for (const received of messages) {
+          // LOG ABRANGENTE CTWA — captura toda mensagem que entra no upsert com qualquer stub ou sem message
+          if (received?.messageStubType != null || received?.messageStubParameters?.length || !received?.message) {
+            this.logger.warn(
+              `[CTWA-DBG] upsert raw: stubType=${received?.messageStubType} stubParams=${JSON.stringify(received?.messageStubParameters)} hasMessage=${!!received?.message} msgKeys=${JSON.stringify(Object.keys(received?.message ?? {}))} fromMe=${received?.key?.fromMe} remoteJid=${received?.key?.remoteJid} pushName=${received?.pushName} type=${type} requestId=${requestId}`,
+            );
+          }
+
           if (
             received?.messageStubParameters?.some?.((param) =>
               [
