@@ -1683,10 +1683,9 @@ export class BaileysStartupService extends ChannelStartupService {
 
       for await (const { key, update } of args) {
         // LOG DE DIAGNÓSTICO CTWA — remover após validação
-        this.logger.verbose(
-          `[CTWA-DBG] messages.update entry: keyId=${key.id} fromMe=${key.fromMe} status=${update.status} stubParams=${JSON.stringify(update.messageStubParameters)}`,
+        this.logger.warn(
+          `[CTWA-DBG] messages.update entry: keyId=${key.id} fromMe=${key.fromMe} status=${update.status} stubParams=${JSON.stringify(update.messageStubParameters)} mapSize=${this.ctwaUnavailableMessages.size} fullUpdate=${JSON.stringify(update)}`,
         );
-
         // Interceptar erro 479: resposta ao requestPlaceholderResend de mensagem CTWA
         if (update.status === 0 && update.messageStubParameters?.includes('479') && key.fromMe === true) {
           this.logger.warn(
