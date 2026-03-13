@@ -928,17 +928,17 @@ export class BaileysStartupService extends ChannelStartupService {
   };
 
   private isClickToWhatsAppAdMessage(received: WAMessage): boolean {
-    // Verificar características específicas de mensagens de anúncios
-    // que chegam sem enc node
-
+    // Mensagens CTWA chegam como stub SEM conteúdo (message=null) com stubType=2
+    // e stubParams=["Message absent from node"]. A condição original exigia
+    // received.message, mas isso nunca é verdade para esse tipo de mensagem.
     const hasAdIndicators =
       received?.messageStubParameters?.some?.((param) => param?.includes?.('Message absent from node')) &&
-      received?.message && // Tem conteúdo de mensagem
+      !received?.message && // CTWA stubs NÃO têm conteúdo
       received?.key?.remoteJid && // Tem remetente válido
       !received?.key?.fromMe && // Não é mensagem enviada por nós
       Boolean(received?.pushName); // Tem nome do contato
 
-    return hasAdIndicators;
+    return Boolean(hasAdIndicators);
   }
 
   /**
