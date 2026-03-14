@@ -1202,34 +1202,39 @@ export class BaileysStartupService extends ChannelStartupService {
               this.logger.info('Processing Click-to-WhatsApp ad message without enc node');
               this.logger.info(`Message details: ${JSON.stringify(received, null, 2)}`);
 
-              // Solicitar reenvio e guardar a mensagem no Map indexada pelo requestId
+              // Guardar no Map pelo remoteJid ANTES de chamar requestPlaceholderResend
+              // (o retorno de requestPlaceholderResend é null/undefined no Baileys atual,
+              // então não podemos depender dele como chave)
+              const ctwaMapKey = received.key.remoteJid;
+              this.ctwaUnavailableMessages.set(ctwaMapKey, received);
+              this.logger.warn(
+                `[CTWA-DBG] stored in map: mapKey=${ctwaMapKey} pushName=${received.pushName} mapSize=${this.ctwaUnavailableMessages.size}`,
+              );
+
+              // Disparar requestPlaceholderResend para tentar recuperar o conteúdo
+              // Se o WhatsApp responder com error 479, o messages.update vai capturar e emitir o webhook
               try {
-                const requestId = await this.client.requestPlaceholderResend(received.key);
-                if (requestId) {
-                  this.logger.info(`CTWA: requestPlaceholderResend dispatched, requestId=${requestId}`);
-                  this.ctwaUnavailableMessages.set(requestId, received);
-                  this.logger.warn(
-                    `[CTWA-DBG] stored in map: requestId=${requestId} mapSize=${this.ctwaUnavailableMessages.size}`,
-                  );
-                  // Limpar do Map após 60 segundos para evitar vazamento de memória
-                  setTimeout(() => {
-                    if (this.ctwaUnavailableMessages.has(requestId)) {
-                      this.logger.warn(
-                        `CTWA: requestId=${requestId} timed out without response (error 479 expected). Emitting synthetic webhook.`,
-                      );
-                      const pendingMessage = this.ctwaUnavailableMessages.get(requestId);
-                      this.ctwaUnavailableMessages.delete(requestId);
-                      if (pendingMessage) {
-                        this.emitCtwaUnavailableWebhook(pendingMessage);
-                      }
-                    }
-                  }, 60_000);
-                }
+                await this.client.requestPlaceholderResend(received.key);
+                this.logger.warn(`[CTWA-DBG] requestPlaceholderResend dispatched for mapKey=${ctwaMapKey}`);
               } catch (err) {
-                this.logger.error(`CTWA: failed to call requestPlaceholderResend: ${err?.message}`);
+                this.logger.error(`[CTWA-DBG] requestPlaceholderResend failed: ${err?.message}`);
               }
 
-              continue; // Não processar agora — aguardar resposta ou timeout
+              // Fallback: se o error 479 não chegar em 60s, emitir webhook pelo timeout
+              setTimeout(() => {
+                if (this.ctwaUnavailableMessages.has(ctwaMapKey)) {
+                  this.logger.warn(
+                    `[CTWA-DBG] timeout fallback: mapKey=${ctwaMapKey} — 479 nunca chegou. Emitindo webhook sintético.`,
+                  );
+                  const pendingMessage = this.ctwaUnavailableMessages.get(ctwaMapKey);
+                  this.ctwaUnavailableMessages.delete(ctwaMapKey);
+                  if (pendingMessage) {
+                    this.emitCtwaUnavailableWebhook(pendingMessage);
+                  }
+                }
+              }, 60_000);
+
+              continue; // Não processar agora — aguardar 479 ou timeout
             } else {
               this.logger.warn(`Message ignored with messageStubParameters: ${JSON.stringify(received, null, 2)}`);
               continue;
@@ -1701,15 +1706,21 @@ export class BaileysStartupService extends ChannelStartupService {
 
         // Interceptar erro 479: resposta ao requestPlaceholderResend de mensagem CTWA
         if (update.status === 0 && update.messageStubParameters?.includes('479') && key.fromMe === true) {
+          const ctwaMapKey = key.remoteJid;
           this.logger.warn(
-            `[CTWA-DBG] 479 condition matched: keyId=${key.id} mapSize=${this.ctwaUnavailableMessages.size} mapKeys=${JSON.stringify([...this.ctwaUnavailableMessages.keys()])}`,
+            `[CTWA-DBG] 479 condition matched: keyId=${key.id} remoteJid=${ctwaMapKey} mapSize=${this.ctwaUnavailableMessages.size} mapKeys=${JSON.stringify([...this.ctwaUnavailableMessages.keys()])}`,
           );
-          const requestId = key.id;
-          const pendingMessage = this.ctwaUnavailableMessages.get(requestId);
+          const pendingMessage = this.ctwaUnavailableMessages.get(ctwaMapKey);
           if (pendingMessage) {
-            this.logger.warn(`CTWA: error 479 received for requestId=${requestId}. Emitting synthetic webhook.`);
-            this.ctwaUnavailableMessages.delete(requestId);
+            this.logger.warn(
+              `[CTWA-DBG] 479 found in map: emitting synthetic webhook for remoteJid=${ctwaMapKey} pushName=${pendingMessage.pushName}`,
+            );
+            this.ctwaUnavailableMessages.delete(ctwaMapKey);
             this.emitCtwaUnavailableWebhook(pendingMessage);
+          } else {
+            this.logger.warn(
+              `[CTWA-DBG] 479 NOT found in map for remoteJid=${ctwaMapKey} — already handled or map miss`,
+            );
           }
           continue;
         }
