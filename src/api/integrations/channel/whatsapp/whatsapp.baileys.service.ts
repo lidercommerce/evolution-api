@@ -1701,26 +1701,32 @@ export class BaileysStartupService extends ChannelStartupService {
       for await (const { key, update } of args) {
         // LOG DE DIAGNÓSTICO CTWA — remover após validação
         this.logger.verbose(
-          `[CTWA-DBG] messages.update entry: keyId=${key.id} fromMe=${key.fromMe} status=${update.status} stubType=${update.messageStubType} stubParams=${JSON.stringify(update.messageStubParameters)} msgKeys=${JSON.stringify(Object.keys(update.message || {}))} mapSize=${this.ctwaUnavailableMessages.size}`,
+          `[CTWA-DBG] messages.update entry: keyId=${key.id} fromMe=${key.fromMe} remoteJid=${key.remoteJid} remoteJidAlt=${(key as any)?.remoteJidAlt} status=${update.status} stubParams=${JSON.stringify(update.messageStubParameters)} mapSize=${this.ctwaUnavailableMessages.size}`,
         );
 
         // Interceptar erro 479: resposta ao requestPlaceholderResend de mensagem CTWA
         if (update.status === 0 && update.messageStubParameters?.includes('479') && key.fromMe === true) {
-          const ctwaMapKey = key.remoteJid;
+          // key.remoteJid e key.remoteJidAlt podem ser @lid ou @s.whatsapp.net em qualquer combinação.
+          // O Map foi populado com o remoteJid que veio no upsert — buscamos pelos dois campos do update.
+          const ctwaKey1 = key.remoteJid;
+          const ctwaKey2 = (key as any)?.remoteJidAlt;
+          const pendingMessage =
+            this.ctwaUnavailableMessages.get(ctwaKey1) ??
+            (ctwaKey2 ? this.ctwaUnavailableMessages.get(ctwaKey2) : undefined);
+          const resolvedKey = this.ctwaUnavailableMessages.has(ctwaKey1) ? ctwaKey1 : ctwaKey2;
+
           this.logger.warn(
-            `[CTWA-DBG] 479 condition matched: keyId=${key.id} remoteJid=${ctwaMapKey} mapSize=${this.ctwaUnavailableMessages.size} mapKeys=${JSON.stringify([...this.ctwaUnavailableMessages.keys()])}`,
+            `[CTWA-DBG] 479 condition matched: keyId=${key.id} remoteJid=${ctwaKey1} remoteJidAlt=${ctwaKey2} resolvedKey=${resolvedKey} mapSize=${this.ctwaUnavailableMessages.size} mapKeys=${JSON.stringify([...this.ctwaUnavailableMessages.keys()])}`,
           );
-          const pendingMessage = this.ctwaUnavailableMessages.get(ctwaMapKey);
+
           if (pendingMessage) {
             this.logger.warn(
-              `[CTWA-DBG] 479 found in map: emitting synthetic webhook for remoteJid=${ctwaMapKey} pushName=${pendingMessage.pushName}`,
+              `[CTWA-DBG] 479 found in map: emitting synthetic webhook for key=${resolvedKey} pushName=${pendingMessage.pushName}`,
             );
-            this.ctwaUnavailableMessages.delete(ctwaMapKey);
+            this.ctwaUnavailableMessages.delete(resolvedKey);
             this.emitCtwaUnavailableWebhook(pendingMessage);
           } else {
-            this.logger.warn(
-              `[CTWA-DBG] 479 NOT found in map for remoteJid=${ctwaMapKey} — already handled or map miss`,
-            );
+            this.logger.warn(`[CTWA-DBG] 479 NOT found in map for remoteJid=${ctwaKey1} remoteJidAlt=${ctwaKey2}`);
           }
           continue;
         }
