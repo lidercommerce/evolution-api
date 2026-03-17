@@ -256,9 +256,16 @@ export class BaileysStartupService extends ChannelStartupService {
   private readonly MESSAGE_CACHE_TTL_SECONDS = 5 * 60; // 5 minutes - avoid duplicate message processing
   private readonly UPDATE_CACHE_TTL_SECONDS = 30 * 60; // 30 minutes - avoid duplicate status updates
 
-  // Map para rastrear mensagens CTWA (Click-to-WhatsApp Ads) pendentes de reenvio
-  // key: requestId do requestPlaceholderResend → value: WAMessage original
+  // Map principal: mapKey (remoteJid do stub) → WAMessage original
   private readonly ctwaUnavailableMessages = new Map<string, WAMessage>();
+
+  // Índice reverso: requestId (keyId do requestPlaceholderResend) → mapKey
+  // Permite cancelar o timeout corretamente quando o 479 chega com keyId=requestId
+  // mas remoteJid=própria conta (não do contato).
+  private readonly ctwaRequestIdToMapKey = new Map<string, string>();
+
+  // TimeoutHandles: mapKey → NodeJS.Timeout — permite cancelar o fallback ao casar pelo requestId
+  private readonly ctwaTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
 
   public stateConnection: wa.StateConnection = { state: 'close' };
 
@@ -1202,37 +1209,64 @@ export class BaileysStartupService extends ChannelStartupService {
               this.logger.info('Processing Click-to-WhatsApp ad message without enc node');
               this.logger.info(`Message details: ${JSON.stringify(received, null, 2)}`);
 
-              // Guardar no Map pelo remoteJid ANTES de chamar requestPlaceholderResend
-              // (o retorno de requestPlaceholderResend é null/undefined no Baileys atual,
-              // então não podemos depender dele como chave)
+              // Chave principal: remoteJid do stub (ex: 259816027091096@lid)
               const ctwaMapKey = received.key.remoteJid;
               this.ctwaUnavailableMessages.set(ctwaMapKey, received);
               this.logger.warn(
                 `[CTWA-DBG] stored in map: mapKey=${ctwaMapKey} pushName=${received.pushName} mapSize=${this.ctwaUnavailableMessages.size}`,
               );
 
-              // Disparar requestPlaceholderResend para tentar recuperar o conteúdo
-              // Se o WhatsApp responder com error 479, o messages.update vai capturar e emitir o webhook
+              // Disparar requestPlaceholderResend e capturar o requestId retornado.
+              // O Baileys retorna o msgId gerado para o request (ex: 3EB09AD543193839E7F498).
+              // Quando o WhatsApp rejeitar com error 479, ele chega em messages.update com
+              // key.id === requestId e key.remoteJid === própria conta (NÃO o remoteJid do contato).
+              // Por isso mantemos o índice reverso ctwaRequestIdToMapKey para cruzar corretamente.
+              let capturedRequestId: string | undefined;
               try {
-                await this.client.requestPlaceholderResend(received.key);
-                this.logger.warn(`[CTWA-DBG] requestPlaceholderResend dispatched for mapKey=${ctwaMapKey}`);
+                const resendResult = await this.client.requestPlaceholderResend(received.key);
+                // requestPlaceholderResend retorna o msgId do request em algumas versões do Baileys
+                capturedRequestId = typeof resendResult === 'string' ? resendResult : (resendResult as any)?.id;
+                if (capturedRequestId) {
+                  this.ctwaRequestIdToMapKey.set(capturedRequestId, ctwaMapKey);
+                  this.logger.warn(
+                    `[CTWA-DBG] requestPlaceholderResend dispatched: mapKey=${ctwaMapKey} capturedRequestId=${capturedRequestId} reverseMapSize=${this.ctwaRequestIdToMapKey.size}`,
+                  );
+                } else {
+                  // Baileys não retornou o requestId diretamente — o índice reverso não pode ser populado agora.
+                  // O messages.update tentará casar pelos dois remoteJid como fallback secundário.
+                  this.logger.warn(
+                    `[CTWA-DBG] requestPlaceholderResend dispatched: mapKey=${ctwaMapKey} capturedRequestId=undefined (fallback será por remoteJid)`,
+                  );
+                }
               } catch (err) {
                 this.logger.error(`[CTWA-DBG] requestPlaceholderResend failed: ${err?.message}`);
               }
 
-              // Fallback: se o error 479 não chegar em 60s, emitir webhook pelo timeout
-              setTimeout(() => {
+              // Fallback de timeout: se o 479 não chegar em 60s nem pelo requestId nem pelo remoteJid,
+              // emitir webhook sintético. O timeout é armazenado para poder ser cancelado via ctwaTimeouts.
+              const timeoutHandle = setTimeout(() => {
                 if (this.ctwaUnavailableMessages.has(ctwaMapKey)) {
                   this.logger.warn(
-                    `[CTWA-DBG] timeout fallback: mapKey=${ctwaMapKey} — 479 nunca chegou. Emitindo webhook sintético.`,
+                    `[CTWA-DBG] timeout fallback: mapKey=${ctwaMapKey} — 479 nunca foi casado. Emitindo webhook sintético. reverseMapSize=${this.ctwaRequestIdToMapKey.size}`,
                   );
                   const pendingMessage = this.ctwaUnavailableMessages.get(ctwaMapKey);
                   this.ctwaUnavailableMessages.delete(ctwaMapKey);
+                  this.ctwaTimeouts.delete(ctwaMapKey);
+                  // Limpar índice reverso se ainda existir para este mapKey
+                  if (capturedRequestId) {
+                    this.ctwaRequestIdToMapKey.delete(capturedRequestId);
+                    this.logger.warn(`[CTWA-DBG] timeout cleanup: removed reverseKey=${capturedRequestId}`);
+                  }
                   if (pendingMessage) {
                     this.emitCtwaUnavailableWebhook(pendingMessage);
                   }
                 }
               }, 60_000);
+
+              this.ctwaTimeouts.set(ctwaMapKey, timeoutHandle);
+              this.logger.warn(
+                `[CTWA-DBG] timeout scheduled: mapKey=${ctwaMapKey} capturedRequestId=${capturedRequestId} timeoutsSize=${this.ctwaTimeouts.size}`,
+              );
 
               continue; // Não processar agora — aguardar 479 ou timeout
             } else {
@@ -1704,29 +1738,54 @@ export class BaileysStartupService extends ChannelStartupService {
           `[CTWA-DBG] messages.update entry: keyId=${key.id} fromMe=${key.fromMe} remoteJid=${key.remoteJid} remoteJidAlt=${(key as any)?.remoteJidAlt} status=${update.status} stubParams=${JSON.stringify(update.messageStubParameters)} mapSize=${this.ctwaUnavailableMessages.size}`,
         );
 
-        // Interceptar erro 479: resposta ao requestPlaceholderResend de mensagem CTWA
+        // Interceptar erro 479: resposta ao requestPlaceholderResend de mensagem CTWA.
+        //
+        // PROBLEMA ANTERIOR: o 479 chega com key.remoteJid = própria conta (ex: 553791237208@s.whatsapp.net)
+        // e key.id = requestId gerado pelo requestPlaceholderResend (ex: 3EB09AD543193839E7F498).
+        // O map foi populado com o remoteJid do CONTATO (259816027091096@lid), então a busca por
+        // remoteJid da própria conta nunca casava → map não era limpo → timeout disparava o 2º webhook.
+        //
+        // SOLUÇÃO: usar ctwaRequestIdToMapKey (índice reverso requestId → mapKey) como lookup primário.
+        // Fallback: busca pelos dois remoteJid (para casos em que o Baileys não retornou o requestId).
         if (update.status === 0 && update.messageStubParameters?.includes('479') && key.fromMe === true) {
-          // key.remoteJid e key.remoteJidAlt podem ser @lid ou @s.whatsapp.net em qualquer combinação.
-          // O Map foi populado com o remoteJid que veio no upsert — buscamos pelos dois campos do update.
+          const requestId = key.id; // key.id DO UPDATE é o requestId do requestPlaceholderResend
           const ctwaKey1 = key.remoteJid;
           const ctwaKey2 = (key as any)?.remoteJidAlt;
-          const pendingMessage =
-            this.ctwaUnavailableMessages.get(ctwaKey1) ??
-            (ctwaKey2 ? this.ctwaUnavailableMessages.get(ctwaKey2) : undefined);
-          const resolvedKey = this.ctwaUnavailableMessages.has(ctwaKey1) ? ctwaKey1 : ctwaKey2;
+
+          // Lookup 1: índice reverso por requestId (caminho correto)
+          const mapKeyByRequestId = this.ctwaRequestIdToMapKey.get(requestId);
+          // Lookup 2: fallback por remoteJid (para quando o Baileys não retornou o requestId)
+          const mapKeyByJid = this.ctwaUnavailableMessages.has(ctwaKey1)
+            ? ctwaKey1
+            : ctwaKey2 && this.ctwaUnavailableMessages.has(ctwaKey2)
+              ? ctwaKey2
+              : undefined;
+
+          const resolvedMapKey = mapKeyByRequestId ?? mapKeyByJid;
+          const pendingMessage = resolvedMapKey ? this.ctwaUnavailableMessages.get(resolvedMapKey) : undefined;
 
           this.logger.warn(
-            `[CTWA-DBG] 479 condition matched: keyId=${key.id} remoteJid=${ctwaKey1} remoteJidAlt=${ctwaKey2} resolvedKey=${resolvedKey} mapSize=${this.ctwaUnavailableMessages.size} mapKeys=${JSON.stringify([...this.ctwaUnavailableMessages.keys()])}`,
+            `[CTWA-DBG] 479 condition matched: requestId(keyId)=${requestId} remoteJid=${ctwaKey1} remoteJidAlt=${ctwaKey2} mapKeyByRequestId=${mapKeyByRequestId} mapKeyByJid=${mapKeyByJid} resolvedMapKey=${resolvedMapKey} mapSize=${this.ctwaUnavailableMessages.size} reverseMapSize=${this.ctwaRequestIdToMapKey.size} mapKeys=${JSON.stringify([...this.ctwaUnavailableMessages.keys()])}`,
           );
 
-          if (pendingMessage) {
+          if (pendingMessage && resolvedMapKey) {
             this.logger.warn(
-              `[CTWA-DBG] 479 found in map: emitting synthetic webhook for key=${resolvedKey} pushName=${pendingMessage.pushName}`,
+              `[CTWA-DBG] 479 resolved: emitting synthetic webhook for resolvedMapKey=${resolvedMapKey} pushName=${pendingMessage.pushName} lookedUpBy=${mapKeyByRequestId ? 'requestId' : 'remoteJid'}`,
             );
-            this.ctwaUnavailableMessages.delete(resolvedKey);
+            // Limpar todos os rastreamentos para evitar que o timeout dispare o 2º webhook
+            this.ctwaUnavailableMessages.delete(resolvedMapKey);
+            this.ctwaRequestIdToMapKey.delete(requestId);
+            const timeoutHandle = this.ctwaTimeouts.get(resolvedMapKey);
+            if (timeoutHandle) {
+              clearTimeout(timeoutHandle);
+              this.ctwaTimeouts.delete(resolvedMapKey);
+              this.logger.warn(`[CTWA-DBG] 479 timeout cancelled for resolvedMapKey=${resolvedMapKey}`);
+            }
             this.emitCtwaUnavailableWebhook(pendingMessage);
           } else {
-            this.logger.warn(`[CTWA-DBG] 479 NOT found in map for remoteJid=${ctwaKey1} remoteJidAlt=${ctwaKey2}`);
+            this.logger.warn(
+              `[CTWA-DBG] 479 NOT resolved: nenhuma entrada encontrada para requestId=${requestId} remoteJid=${ctwaKey1} remoteJidAlt=${ctwaKey2}`,
+            );
           }
           continue;
         }
