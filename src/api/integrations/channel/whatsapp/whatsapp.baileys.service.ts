@@ -1738,7 +1738,70 @@ export class BaileysStartupService extends ChannelStartupService {
           `[CTWA-DBG] messages.update entry: keyId=${key.id} fromMe=${key.fromMe} remoteJid=${key.remoteJid} remoteJidAlt=${(key as any)?.remoteJidAlt} status=${update.status} stubParams=${JSON.stringify(update.messageStubParameters)} mapSize=${this.ctwaUnavailableMessages.size}`,
         );
 
-        // Interceptar erro 479: resposta ao requestPlaceholderResend de mensagem CTWA.
+        // ──────────────────────────────────────────────────────────────────────────
+        // INTERCEPTOR CTWA — Caminho 1: segundo messages.update do stub (status=undefined)
+        //
+        // Padrão observado nos logs: após o stub CTWA chegar no upsert e o
+        // requestPlaceholderResend ser disparado, o WhatsApp envia um messages.update
+        // com status=undefined, fromMe=false, remoteJid=<@lid do contato> e
+        // stubParams=["Message absent from node", "<requestId>"].
+        // Esse evento chega ~5s depois do stub — bem antes do timeout de 60s.
+        // O remoteJid aqui É a chave do map, então conseguimos casar diretamente
+        // e cancelar o timeout, eliminando a espera desnecessária.
+        //
+        // Exemplo real dos logs:
+        //   keyId=A535B11D5DD284D9E2F088D6D4E73DB7 fromMe=false remoteJid=244427041853574@lid
+        //   remoteJidAlt=554191971974@s.whatsapp.net status=undefined
+        //   stubParams=["Message absent from node","3EB0FB18BA41859ABE5EDF"]
+        // ──────────────────────────────────────────────────────────────────────────
+        if (
+          update.status === undefined &&
+          key.fromMe === false &&
+          update.messageStubParameters?.includes('Message absent from node') &&
+          this.ctwaUnavailableMessages.size > 0
+        ) {
+          const ctwaKey1 = key.remoteJid;
+          const ctwaKey2 = (key as any)?.remoteJidAlt;
+          const resolvedMapKey = this.ctwaUnavailableMessages.has(ctwaKey1)
+            ? ctwaKey1
+            : ctwaKey2 && this.ctwaUnavailableMessages.has(ctwaKey2)
+              ? ctwaKey2
+              : undefined;
+
+          this.logger.verbose(
+            `[CTWA-DBG] messages.update stub-confirm check: keyId=${key.id} remoteJid=${ctwaKey1} remoteJidAlt=${ctwaKey2} resolvedMapKey=${resolvedMapKey} mapSize=${this.ctwaUnavailableMessages.size}`,
+          );
+
+          if (resolvedMapKey) {
+            const pendingMessage = this.ctwaUnavailableMessages.get(resolvedMapKey);
+            this.logger.warn(
+              `[CTWA-DBG] stub-confirm MATCHED: resolvedMapKey=${resolvedMapKey} pushName=${pendingMessage?.pushName} — cancelando timeout e emitindo webhook imediatamente`,
+            );
+            this.ctwaUnavailableMessages.delete(resolvedMapKey);
+            // Limpar índice reverso se existir
+            for (const [reqId, mapKey] of this.ctwaRequestIdToMapKey.entries()) {
+              if (mapKey === resolvedMapKey) {
+                this.ctwaRequestIdToMapKey.delete(reqId);
+                this.logger.warn(`[CTWA-DBG] stub-confirm: removed reverseKey=${reqId}`);
+                break;
+              }
+            }
+            // Cancelar o timeout — sem ele não haverá 2º webhook
+            const timeoutHandle = this.ctwaTimeouts.get(resolvedMapKey);
+            if (timeoutHandle) {
+              clearTimeout(timeoutHandle);
+              this.ctwaTimeouts.delete(resolvedMapKey);
+              this.logger.warn(`[CTWA-DBG] stub-confirm: timeout cancelled for resolvedMapKey=${resolvedMapKey}`);
+            }
+            if (pendingMessage) {
+              this.emitCtwaUnavailableWebhook(pendingMessage);
+            }
+            continue; // Não processar esse update como mensagem normal
+          }
+        }
+
+        // ──────────────────────────────────────────────────────────────────────────
+        // INTERCEPTOR CTWA — Caminho 2: erro 479 via requestPlaceholderResend
         //
         // PROBLEMA ANTERIOR: o 479 chega com key.remoteJid = própria conta (ex: 553791237208@s.whatsapp.net)
         // e key.id = requestId gerado pelo requestPlaceholderResend (ex: 3EB09AD543193839E7F498).
@@ -1747,6 +1810,7 @@ export class BaileysStartupService extends ChannelStartupService {
         //
         // SOLUÇÃO: usar ctwaRequestIdToMapKey (índice reverso requestId → mapKey) como lookup primário.
         // Fallback: busca pelos dois remoteJid (para casos em que o Baileys não retornou o requestId).
+        // ──────────────────────────────────────────────────────────────────────────
         if (update.status === 0 && update.messageStubParameters?.includes('479') && key.fromMe === true) {
           const requestId = key.id; // key.id DO UPDATE é o requestId do requestPlaceholderResend
           const ctwaKey1 = key.remoteJid;
