@@ -26,6 +26,11 @@ if [[ "$DATABASE_PROVIDER" == "postgresql" || "$DATABASE_PROVIDER" == "mysql" ||
     else
         echo "Prisma generate succeeded"
     fi
+
+    echo "Setting up app_history trigger..."
+    npx prisma db execute --file ./Docker/scripts/setup_history_trigger.sql --url "$DATABASE_CONNECTION_URI" \
+        && echo "app_history trigger setup succeeded" \
+        || echo "[WARNING] app_history trigger setup failed, continuing..."
 else
     echo "Error: Database provider $DATABASE_PROVIDER invalid."
     exit 1
